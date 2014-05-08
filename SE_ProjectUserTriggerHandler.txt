@@ -1,6 +1,6 @@
 /**********************************************************************************
  Author        :  Bryan Leboff
- Date          :  Aug 22, 2013
+ Date          :  Aug 22, 2013  
  Purpose       :  Trigger handler for project user. This will modify project
  					followers based on project user records.
 ***********************************************************************************/
