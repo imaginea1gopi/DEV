@@ -1,0 +1,238 @@
+/**********************************************************************************
+ Author        :  Bryan Leboff
+ Date          :  Aug 22, 2013
+ Purpose       :  Trigger handler for project user. This will modify project
+ 					followers based on project user records.
+***********************************************************************************/
+
+public with sharing class SE_ProjectUserTriggerHandler {
+    private boolean isExecuting = false;
+    private integer batchSize = 0;
+ 
+    public SE_ProjectUserTriggerHandler(boolean isExecuting, integer size){
+        isExecuting = isExecuting;
+        batchSize = size;
+    }
+    public void OnBeforeInsert(Project_User__c[] newProject_Users){
+    	//this is only true if project user is guest
+    	Id netId = SE_UserInfoHelper.networkId;
+    	//Added here
+		list<Project_User__c> lstPU=[Select Name,Id, Success_Plan_Role__c, Success_Plan_Role__r.Auto_Follow_Case__c from Project_User__c where id in :newProject_Users];
+    	if(netId != null){
+    		List<EntitySubscription> follows = new List<EntitySubscription>();
+	        for(Project_User__c p : newProject_Users){
+				System.debug('trrry'+p.Success_Plan_Role__r.Auto_Follow_Case__c);
+	 			if(p.project__c != null && p.user__c != null && p.Success_Plan_Role__r.Auto_Follow_Case__c==true){
+					
+	 				follows.add(SE_ChatterHelper.createFollower(p.project__c, p.user__c, netId));
+	 			}
+		 	}
+		 	try{
+ 				insert follows;
+	 		}catch(Exception e){
+	 			System.debug('couldnt insert followers');
+	 		}
+    	}
+      
+    }
+    
+  //==============================================================================================//
+  // Update defualt value of existing project user record  T-182560 : Sunil
+  //==============================================================================================//
+  public void OnAfterInsert(List<Project_User__c> newList){
+  	//Update defualt value of existing project user records  T-182560 : Sunil
+    UpdateDefaultProject(true, newList, null);
+    shareProject(newList);
+  }    
+  
+  
+  //share projects with project users
+  public void shareProject(List<Project_User__c> newList){
+  		List<Project__Share> ps = new List<Project__Share>();
+  		
+  		for(Project_User__c pu : newList){
+  			Project__Share share = new Project__Share();
+  			
+  			share.parentid = pu.project__c;
+  			share.userorgroupid = pu.user__c;
+  			share.accesslevel = 'Read';
+  			
+  			ps.add(share);
+  		}
+  		
+  		try{
+  			Database.insert(ps, false);
+  		}catch(Exception e){
+  			System.debug('Couldn\'t share projects with project users for whatever reason');
+  			System.debug(e);
+  		}
+  	
+  }
+  public void unShareProjects(List<Project_User__c> oldList){
+  		List<Project__Share> ps = new List<Project__Share>();
+  		Set<String> projects = new Set<String>();
+  		Set<String> users = new Set<String>();
+  		
+  		for(Project_User__c pu : oldList){
+  			projects.add(pu.project__c);
+  			users.add(pu.user__c);
+  		}
+  		
+  		List<Project__Share> puShare = [SELECT Id, UserOrGroupId, parentid FROM Project__Share WHERE ParentId in : projects AND UserOrGroupId in :users];
+  		for(Project_User__c pu : oldList){
+  			for(Project__Share p : puShare){
+  				if(p.UserOrGroupId == pu.user__c && p.parentid == pu.project__c){
+  					ps.add(p);
+  				}
+  			}
+  		}
+  		
+  		try{
+  			Database.delete(ps, false);
+  		}catch(Exception e){
+  			System.debug('Couldn\'t share projects with project users for whatever reason');
+  			System.debug(e);
+  		}
+  	
+  }
+    
+    
+    
+    @future public static void OnAfterInsertAsync(Set <ID> newProject_UserIDs){
+        //Example usage
+        //List <Project_User__c> newProject_Users = [select Id, Name from Project_User where Id IN :newProject_UserIDs];
+    }
+    public void OnBeforeUpdate(Project_User__c[] oldProject_Users, Project_User__c[] updatedProject_Users, Map <ID, Project_User__c> project_UserMap){
+        //Example Map usage
+        //remove old project shares
+      
+    }
+    public void OnAfterUpdate(Project_User__c[] oldProject_Users, Project_User__c[] updatedProject_Users, Map <ID, Project_User__c> project_UserMap, Map<Id,Project_User__c> oldMap){
+    	//Update defualt value of existing project user records  T-182560 : Sunil
+    	UpdateDefaultProject(false, updatedProject_Users, oldMap);
+    	
+       unShareProjects(oldProject_Users);
+       shareProject(updatedProject_Users);
+    	
+    	Id netId = SE_UserInfoHelper.networkId;
+
+    	if(netId != null){
+ 		//if old project != new project or if old user != new user we must delete the old subscription and create a new one
+ 			List<String> projects = new List<String>();
+ 			List<Project_User__c> projectUsers = new List<Project_User__c>();
+	 		List<EntitySubscription> creation = new List<EntitySubscription>();
+	 		
+	 		for(Project_User__c old : oldProject_Users){
+	 			Project_User__c newPu = project_UserMap.get(old.id);
+	 			if(old.project__c != newPu.project__c || old.user__c != newPu.user__c){
+	 				projects.add(old.project__c);
+	 				projectUsers.add(old);
+	 				creation.add(SE_ChatterHelper.createFollower(newPu.project__c, newPu.user__c, netId));
+	 			}
+	 		}
+	 		//for each removal, delete the old one
+	 		List<EntitySubscription> puEs = [select id, parentid, subscriberid from EntitySubscription where parentid in :projects limit 1000];
+	 		List<EntitySubscription> deleteEs = new List<EntitySubscription>();
+	 		//
+	 		for(EntitySubscription es : puEs){
+	 			for(Project_User__c pu : projectUsers){
+	 				if(es.parentId == pu.project__c && es.subscriberid == pu.user__c){
+	 					deleteEs.add(es);
+	 				}
+	 			}
+	 		}
+	 		try{
+	 			delete deleteEs;
+ 				insert creation;
+	 		}catch(Exception e){
+	 			System.debug('couldnt insert followers');
+	 		}
+    	}
+    }
+    @future public static void OnAfterUpdateAsync(Set <ID> updatedProject_UserIDs){
+        //Example usage
+        //List <Project_User__c> updatedProject_Users = [select Id, Name from Project_User__c where Id IN :updatedProject_UserIDs];
+    }
+    public void OnBeforeDelete(Project_User__c[] Project_UsersToDelete, Map<ID, Project_User__c> project_UserMap){
+ 
+    }
+    public void OnAfterDelete(Project_User__c[] deletedProject_Users, Map<ID, Project_User__c> project_UserMap){
+    	 unShareProjects(deletedProject_Users);
+    	
+ 		//remove entity subscriptions
+ 		String netId = SE_UserInfoHelper.networkId;
+
+    	if(netId != null){
+    		List<String> deletedIds = new List<String>();
+    		//get entity ids
+    		for(Project_User__c pu : deletedProject_Users){
+    			deletedIds.add(pu.project__c);
+    		}
+    		List<EntitySubscription> puEs = [select id, parentid, subscriberid from EntitySubscription where parentid in :deletedIds];
+    		
+    		//
+    		List<EntitySubscription> deleteEs = new List<EntitySubscription>();
+    		
+    		for(EntitySubscription es : puEs){
+	 			for(Project_User__c pu : deletedProject_Users){
+	 				if(es.parentId == pu.project__c && es.subscriberid == pu.user__c){
+	 					deleteEs.add(es);
+	 				}
+	 			}
+    		}
+    		try{
+	 			delete deleteEs;
+	 		}catch(Exception e){
+	 			System.debug('couldnt delete followers');
+	 		}
+	 			
+    	}
+    }
+    @future public static void OnAfterDeleteAsync(Set <ID> deletedProject_UserIDs){
+ 
+    }
+    public void OnUndelete(Project_User__c[] restoredProject_Users){
+ 
+    }
+    public boolean IsTriggerContext{
+        get{ return isExecuting;}
+    }
+    public boolean IsVisualforcePageContext{
+        get{ return !IsTriggerContext;}
+    }
+    public boolean IsWebServiceContext{
+        get{ return !IsTriggerContext;}
+    }
+    public boolean IsExecuteAnonymousContext{
+        get{ return !IsTriggerContext;}
+    }
+    
+  //==============================================================================================//
+  // Helper method to Update defualt value of existing project user records  T-182560 : Sunil
+  //==============================================================================================//
+  private void UpdateDefaultProject(Boolean isInsert, List<Project_User__c> newList, Map<Id, Project_User__c> oldMap){
+    //First Prepare map for UserId and Project_User Id which has default true 
+    Map<Id,Id> mapUserWithPU = new Map<Id,Id>();
+    for(Project_User__c pu: newList){
+    	if(isInsert == true || oldMap.get(pu.Id).Default__c != pu.Default__c){
+	      if(pu.Default__c == true){
+	        mapUserWithPU.put(pu.Id, pu.User__c);
+	      }
+    	}
+    }
+    
+    List<Project_User__c> lstToUpdate = new List<Project_User__c>();
+    for(Project_User__c pu: [SELECT Id, Default__c FROM Project_User__c 
+                             WHERE User__c IN :mapUserWithPU.values()]){
+      if(pu.Default__c == true && mapUserWithPU.ContainsKey(pu.Id) == false){
+        pu.Default__c = false;
+        lstToUpdate.add(pu);
+      }
+    }
+    //Update List
+    if(lstToUpdate.size() > 0){
+      update lstToUpdate;
+    }
+  }        
+    
+}
